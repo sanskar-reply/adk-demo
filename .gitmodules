@@ -1,0 +1,3 @@
+[submodule "gemini-live-demo"]
+	path = gemini-live-demo
+	url = ./gemini-live-demo

@@ -55,6 +55,17 @@ class Feedback(BaseModel):
     )
 
 
+class ValidationResult(BaseModel):
+    """Model for agent validation results."""
+
+    validation_passed: bool = Field(
+        description="True if the agent's output passes all validation checks, False otherwise."
+    )
+    feedback: str = Field(
+        description="Detailed feedback on the validation outcome, including reasons for failure if any."
+    )
+
+
 # --- Callbacks ---
 def collect_research_sources_callback(callback_context: CallbackContext) -> None:
     """Collects and organizes web-based research sources and their supported claims from agent events.
@@ -178,6 +189,26 @@ class EscalationChecker(BaseAgent):
             yield Event(author=self.name)
 
 
+class ValidationChecker(BaseAgent):
+    """Checks agent validation and escalates to stop the loop if validation passes."""
+
+    def __init__(self, name: str):
+        super().__init__(name=name)
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+        validation_result = ctx.session.state.get("agent_validation")
+        if validation_result and validation_result.get("validation_passed"):
+            logging.info(f"[{self.name}] Agent validation passed. Escalating to stop loop.")
+            yield Event(author=self.name, actions=EventActions(escalate=True))
+        else:
+            logging.info(
+                f"[{self.name}] Agent validation failed or not found. Loop will continue."
+            )
+            yield Event(author=self.name)
+
+
 # --- AGENT DEFINITIONS ---
 plan_generator = LlmAgent(
     model=config.worker_model,
@@ -234,6 +265,31 @@ section_researcher = LlmAgent(
     after_agent_callback=collect_research_sources_callback,
 )
 
+agent_validator = LlmAgent(
+    model=config.validator_model,
+    name="agent_validator",
+    description="Validates the agent's output against predefined criteria and provides feedback.",
+    instruction=f"""
+    You are an impartial validation agent. Your role is to critically assess the output of the previous agent step.
+    Review the agent's last output, available in the session state.
+    Perform the following validation checks:
+    1.  **Completeness**: Does the output fully address the prompt?
+    2.  **Accuracy**: Is the information presented factually correct based on the provided context (if any)?
+    3.  **Format**: Does the output adhere to any specified formatting requirements?
+    4.  **Safety**: Does the output contain any harmful or inappropriate content?
+
+    If all checks pass, set `validation_passed` to `True`. Otherwise, set it to `False` and provide specific `feedback`
+    on which checks failed and why, suggesting how to improve the output.
+
+    Current date: {datetime.datetime.now().strftime("%Y-%m-%d")}
+    Your response must be a single, raw JSON object validating against the 'ValidationResult' schema.
+    """,
+    output_schema=ValidationResult,
+    disallow_transfer_to_parent=True,
+    disallow_transfer_to_peers=True,
+    output_key="agent_validation",
+)
+
 research_evaluator = LlmAgent(
     model=config.critic_model,
     name="research_evaluator",
@@ -260,6 +316,7 @@ research_evaluator = LlmAgent(
     disallow_transfer_to_peers=True,
     output_key="research_evaluation",
 )
+
 
 enhanced_search_executor = LlmAgent(
     model=config.worker_model,
@@ -313,6 +370,15 @@ report_composer = LlmAgent(
     after_agent_callback=citation_replacement_callback,
 )
 
+validation_pipeline = SequentialAgent(
+    name="validation_pipeline",
+    description="Performs validation checks on the agent's output.",
+    sub_agents=[
+        agent_validator,
+        ValidationChecker(name="validation_checker"),
+    ],
+)
+
 research_pipeline = SequentialAgent(
     name="research_pipeline",
     description="Executes a pre-approved research plan. It performs iterative research, evaluation, and composes a final, cited report.",
@@ -329,6 +395,7 @@ research_pipeline = SequentialAgent(
             ],
         ),
         report_composer,
+        validation_pipeline,  # Add validation after report composition
     ],
 )
 
@@ -353,6 +420,7 @@ interactive_planner_agent = LlmAgent(
     sub_agents=[research_pipeline],
     tools=[AgentTool(plan_generator)],
     output_key="research_plan",
+    max_steps=config.max_agent_steps, # Added max_steps
 )
 
 root_agent = interactive_planner_agent

@@ -35,12 +35,16 @@ class ResearchConfiguration:
     Attributes:
         critic_model (str): Model for evaluation tasks.
         worker_model (str): Model for working/generation tasks.
+        validator_model (str): Model for agent validation tasks.
         max_search_iterations (int): Maximum search iterations allowed.
+        max_agent_steps (int): Maximum steps allowed for the agent.
     """
 
     critic_model: str = "gemini-2.5-pro"
     worker_model: str = "gemini-2.5-flash"
+    validator_model: str = "gemini-2.5-flash"
     max_search_iterations: int = 5
+    max_agent_steps: int = 20
 
 
 config = ResearchConfiguration()
